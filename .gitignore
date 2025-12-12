@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-selfcheck.json
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Index data (не храним тестовые данные в репо)
+*_data/
+*.idx
+*.bin
+*.json
