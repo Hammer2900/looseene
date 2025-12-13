@@ -4,15 +4,33 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "looseene"
-version = "0.1.0"
+version = "1.0.0"
 authors = [
-  { name="Your Name", email="you@example.com" },
+    { name="Hammerok", email="evgeny2900@example.com" },
 ]
-description = "A tiny, persistent full-text search engine in one file."
+description = "A tiny, persistent, zero-dependency full-text search engine in pure Python."
 readme = "README.md"
 requires-python = ">=3.7"
+license = {text = "MIT"}
 classifiers = [
-    "Programming Language :: Python :: 3",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Database :: Database Engines/Servers",
 ]
+keywords = ["search", "search-engine", "full-text", "bm25", "lucene", "embedded"]
+
+[project.urls]
+"Homepage" = "https://github.com/Hammer2900/looseene"
+"Bug Tracker" = "https://github.com/Hammer2900/looseene/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["looseene*"]

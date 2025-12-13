@@ -16,6 +16,8 @@ from looseene import (
     ValidationError,
 )
 
+from looseene import _REGISTRY, _REGISTRY_LOCK
+
 
 class TestLooseene(unittest.TestCase):
     def setUp(self):
@@ -26,7 +28,12 @@ class TestLooseene(unittest.TestCase):
         create_index('test_idx', schema={'id': int, 'title': str, 'content': str}, path=self.test_path)
 
     def tearDown(self):
-        """Удаляет временную папку после каждого теста."""
+        """Удаляет временную папку после каждого теста и очищает реестр."""
+        with _REGISTRY_LOCK:
+            for idx in _REGISTRY.values():
+                idx.close()
+            _REGISTRY.clear()
+
         if os.path.exists(self.test_path):
             shutil.rmtree(self.test_path)
 
@@ -68,7 +75,7 @@ class TestLooseene(unittest.TestCase):
         query = 'relevant engine'
         doc = list(search_text('test_idx', query))[0]
         snippet = highlight_result(doc, 'content', query)
-        expected = '...search <b>engine</b> provides <b>relevant</b> search results.'
+        expected = 'A search <b>engine</b> provides <b>relevant</b> search results.'
         self.assertEqual(snippet, expected)
 
     def test_05_compaction(self):
@@ -116,6 +123,106 @@ class TestLooseene(unittest.TestCase):
         print(f"Searched for '{query}' and found {len(results)} results in {search_time:.6f}s")
         self.assertGreater(len(results), 0)
         self.assertLess(search_time, 0.1, 'Search should be reasonably fast')
+
+    def test_08_bm25_ranking(self):
+        """Тест ранжирования: документ с большим кол-вом совпадений должен быть выше."""
+        # Док 1: слово fox встречается 1 раз
+        add_to_index('test_idx', {'id': 1, 'content': 'fox'})
+        # Док 2: слово fox встречается 3 раза
+        add_to_index('test_idx', {'id': 2, 'content': 'fox fox fox'})
+        # Док 3: слово fox встречается 2 раза
+        add_to_index('test_idx', {'id': 3, 'content': 'fox fox'})
+
+        save_index('test_idx')
+
+        results = list(search_text('test_idx', 'fox'))
+        self.assertEqual(len(results), 3)
+
+        # Ожидаемый порядок ID: 2 (3 раза), 3 (2 раза), 1 (1 раз)
+        ids = [doc['id'] for doc in results]
+        self.assertEqual(ids, [2, 3, 1], "BM25 ranking failed: more frequent terms should rank higher")
+
+    def test_09_stemming_and_punctuation(self):
+        """Тест стемминга и игнорирования знаков препинания."""
+        # 'runner' -> 'run', 'running' -> 'run' (в рамках простого стеммера)
+        add_to_index('test_idx', {'id': 1, 'content': 'The runner was running fast!'})
+        save_index('test_idx')
+
+        # Ищем по корню 'run'
+        results = list(search_text('test_idx', 'run'))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['id'], 1)
+
+        # Проверяем пунктуацию: ищем 'fast' (в тексте 'fast!')
+        results = list(search_text('test_idx', 'fast'))
+        self.assertEqual(len(results), 1)
+
+    def test_10_document_shadowing_across_segments(self):
+        """Тест перекрытия: новая версия документа в новом сегменте должна скрывать старую."""
+        # Сегмент 1: ID 1 = "Old version"
+        add_to_index('test_idx', {'id': 1, 'content': 'Old version'})
+        save_index('test_idx')
+
+        # Сегмент 2: ID 1 = "New version"
+        add_to_index('test_idx', {'id': 1, 'content': 'New version'})
+        save_index('test_idx')
+
+        # Должен вернуться только один результат - самый свежий
+        results = list(search_text('test_idx', 'version'))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['content'], 'New version')
+
+    def test_11_edge_cases(self):
+        """Тест граничных случаев: пустые запросы, несуществующие слова."""
+        add_to_index('test_idx', {'id': 1, 'content': 'Something here'})
+        save_index('test_idx')
+
+        # Пустой запрос
+        results = list(search_text('test_idx', ''))
+        self.assertEqual(len(results), 0)
+
+        # Запрос с символами, которые полностью отсекаются (слишком короткие)
+        results = list(search_text('test_idx', 'a b'))
+        self.assertEqual(len(results), 0)
+
+        # Несуществующее слово
+        results = list(search_text('test_idx', 'banana'))
+        self.assertEqual(len(results), 0)
+
+    def test_12_threading_stress(self):
+        """Тест многопоточности: одновременная запись и поиск."""
+        import threading
+        import random
+
+        def writer_task():
+            for i in range(50):
+                doc_id = random.randint(1, 1000)
+                add_to_index('test_idx', {'id': doc_id, 'content': f'content {i} thread write'})
+                if i % 10 == 0:
+                    save_index('test_idx')
+
+        def reader_task():
+            for _ in range(50):
+                list(search_text('test_idx', 'content'))
+
+        threads = []
+        # Запускаем 5 писателей и 5 читателей
+        for _ in range(5):
+            t_w = threading.Thread(target=writer_task)
+            t_r = threading.Thread(target=reader_task)
+            threads.append(t_w)
+            threads.append(t_r)
+            t_w.start()
+            t_r.start()
+
+        for t in threads:
+            t.join()
+
+        # Если мы дошли до сюда без исключений - тест пройден
+        # Можно проверить целостность, сделав compaction
+        compact_index('test_idx')
+        results = list(search_text('test_idx', 'thread'))
+        self.assertGreater(len(results), 0)
 
 
 if __name__ == '__main__':

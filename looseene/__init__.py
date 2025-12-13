@@ -1,17 +1,18 @@
 import heapq
+import itertools
 import json
+import math
+import mmap
 import os
 import re
 import shutil
 import struct
 import threading
 import time
+import uuid
+import zlib
 from collections import defaultdict, Counter
 from typing import Dict, List, Generator, Optional, Set, Tuple, Type
-
-import math
-import mmap
-import zlib
 
 __all__ = [
     'create_index',
@@ -31,6 +32,12 @@ _REGISTRY: Dict[str, 'IndexEngine'] = {}
 _REGISTRY_LOCK = threading.Lock()
 POSTING_STRUCT = struct.Struct('<II')
 MAGIC_NUMBER = b'IDX4'
+
+_counter = itertools.count()
+
+
+def gen_id():
+    return f'{time.time_ns()}_{next(_counter)}'
 
 
 class SearchLibError(Exception):
@@ -201,12 +208,13 @@ class DiskSegment:
         return 0
 
     def close(self):
-        if hasattr(self, 'mm_postings'):
+        if hasattr(self, 'mm_postings') and not self.mm_postings.closed:
             self.mm_postings.close()
-        if hasattr(self, 'mm_docs'):
+        if hasattr(self, 'mm_docs') and not self.mm_docs.closed:
             self.mm_docs.close()
         for f in self.files.values():
-            f.close()
+            if not f.closed:
+                f.close()
 
 
 class SegmentWriter:
@@ -273,6 +281,13 @@ class IndexEngine:
                 os.makedirs(self.path, exist_ok=True)
             self._load_segments()
             self._load_stats()
+
+    def close(self):
+        """Closes all open file handles for segments."""
+        with self._lock:
+            for seg in self.segments:
+                seg.close()
+            self.segments.clear()
 
     def _load_stats(self):
         sp = os.path.join(self.path, 'stats.json')
@@ -352,7 +367,9 @@ class IndexEngine:
             inverted_list = {}
             for term, doc_map in self.mem_inverted.items():
                 inverted_list[term] = list(doc_map.items())
-            seg_id = str(int(time.time() * 1000))
+            # seg_id = f'{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}'
+            # seg_id = str(time.monotonic_ns())
+            seg_id = gen_id()
             new_seg_path = SegmentWriter.write(self.path, seg_id, inverted_list, self.mem_docs, self.mem_doc_lens)
             self.segments.append(DiskSegment(new_seg_path))
             self.mem_docs.clear()
@@ -364,7 +381,6 @@ class IndexEngine:
         if not self.path:
             return
         with self._lock:
-            print(f'[{self.name}] Compacting...')
             self.flush()
             if len(self.segments) <= 1 and not self.deleted_ids:
                 return
@@ -394,16 +410,22 @@ class IndexEngine:
                 if doc:
                     merged_docs[doc_id] = doc
                     merged_doc_lens[doc_id] = seg.get_doc_len(doc_id)
-            new_seg_id = f'merged_{int(time.time())}'
+
+            new_seg_id = f'merged_{int(time.time())}_{uuid.uuid4().hex[:6]}'
             new_path = SegmentWriter.write(self.path, new_seg_id, merged_inverted, merged_docs, merged_doc_lens)
+
             old_segments = self.segments[:]
             self.segments = [DiskSegment(new_path)]
+
             for seg in old_segments:
                 seg.close()
-                shutil.rmtree(seg.dir_path)
+                try:
+                    shutil.rmtree(seg.dir_path)
+                except FileNotFoundError:
+                    pass
+
             self.deleted_ids.clear()
             self._save_stats()
-            print('Compaction done.')
 
     def search(self, query: str) -> Generator[Dict, None, None]:
         tokens = TextProcessor.process(query)
@@ -447,6 +469,8 @@ class IndexEngine:
 
 def create_index(name: str, schema: Dict[str, Type], path: Optional[str] = None):
     with _REGISTRY_LOCK:
+        if name in _REGISTRY:
+            _REGISTRY[name].close()
         idx = IndexEngine(name, schema, path)
         _REGISTRY[name] = idx
     return idx

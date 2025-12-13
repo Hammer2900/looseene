@@ -24,3 +24,6 @@ htmlcov/
 *.idx
 *.bin
 *.json
+
+test_index_data/
+.venv*/
